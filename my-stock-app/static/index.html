@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>股票模擬交易系統</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        #kline { max-width: 800px; margin-bottom: 30px; }
+        .section { margin-bottom: 30px; }
+        table { border-collapse: collapse; width: 100%; }
+        th, td { border: 1px solid #ccc; padding: 6px 10px; text-align: center; }
+        th { background: #f0f0f0; }
+    </style>
+</head>
+<body>
+    <h1>股票模擬交易系統</h1>
+    <div class="section">
+        <label for="stock-select">選擇股票：</label>
+        <select id="stock-select"></select>
+    </div>
+    <div class="section">
+        <canvas id="kline" height="350"></canvas>
+    </div>
+    <div class="section">
+        <h3>下單</h3>
+        <form id="trade-form">
+            <label>動作：
+                <select id="action">
+                    <option value="buy">買進</option>
+                    <option value="sell">賣出</option>
+                </select>
+            </label>
+            <label>數量：<input type="number" id="quantity" min="1" value="1" required></label>
+            <label>價格：<input type="number" id="price" min="1" step="0.01" required></label>
+            <button type="submit">送出</button>
+        </form>
+        <div id="trade-msg"></div>
+    </div>
+    <div class="section">
+        <h3>持倉</h3>
+        <table id="portfolio-table">
+            <thead><tr><th>股票代碼</th><th>名稱</th><th>持有數量</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+    <div class="section">
+        <h3>交易紀錄</h3>
+        <table id="history-table">
+            <thead><tr><th>日期</th><th>股票代碼</th><th>動作</th><th>價格</th><th>數量</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+    <div class="section">
+        <h3>掛單查詢</h3>
+        <label>股票篩選：<select id="order-stock-filter"></select></label>
+        <table id="orders-table">
+            <thead><tr><th>日期</th><th>股票代碼</th><th>動作</th><th>價格</th><th>數量</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+<script>
+const api = path => `http://localhost:5000${path}`;
+let stocks = [];
+let klineChart = null;
+
+async function fetchStocks() {
+    const res = await fetch(api('/api/stocks'));
+    stocks = await res.json();
+    const select = document.getElementById('stock-select');
+    select.innerHTML = stocks.map(s => `<option value="${s.id}">${s.id} ${s.name}</option>`).join('');
+    select.onchange = () => loadKline(select.value);
+    loadKline(select.value);
+    setupOrderStockFilter();
+}
+
+async function loadKline(stockId) {
+    const res = await fetch(api(`/api/kline/${stockId}`));
+    const data = await res.json();
+    drawKline(data);
+    document.getElementById('price').value = data[data.length-1].close;
+    loadOrders();
+}
+
+function drawKline(data) {
+    const ctx = document.getElementById('kline').getContext('2d');
+    const labels = data.map(d => d.date);
+    const ohlc = data.map(d => ({o: d.open, h: d.high, l: d.low, c: d.close}));
+    // Chart.js 沒有內建 K 線, 用 bar+line 模擬
+    if (klineChart) klineChart.destroy();
+    klineChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                {
+                    type: 'bar',
+                    label: 'K線',
+                    data: ohlc.map(d => [d.o, d.h, d.l, d.c]),
+                    backgroundColor: ohlc.map(d => d.c >= d.o ? 'rgba(255,80,80,0.5)' : 'rgba(0,180,0,0.5)'),
+                    borderSkipped: false,
+                    borderRadius: 2,
+                    barPercentage: 1.0,
+                    categoryPercentage: 1.0,
+                },
+                {
+                    type: 'line',
+                    label: '收盤價',
+                    data: ohlc.map(d => d.c),
+                    borderColor: '#333',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    fill: false,
+                }
+            ]
+        },
+        options: {
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { display: false },
+                y: { beginAtZero: false }
+            }
+        }
+    });
+}
+
+document.getElementById('trade-form').onsubmit = async function(e) {
+    e.preventDefault();
+    const stock_id = document.getElementById('stock-select').value;
+    const action = document.getElementById('action').value;
+    const quantity = parseInt(document.getElementById('quantity').value);
+    const price = parseFloat(document.getElementById('price').value);
+    const res = await fetch(api('/api/trade'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stock_id, action, quantity, price })
+    });
+    const result = await res.json();
+    document.getElementById('trade-msg').innerText = result.status === 'success' ? '下單成功！' : (result.msg || '下單失敗');
+    loadPortfolio();
+    loadOrders();
+};
+
+async function loadPortfolio() {
+    const res = await fetch(api('/api/portfolio'));
+    const data = await res.json();
+    const ptbody = document.querySelector('#portfolio-table tbody');
+    ptbody.innerHTML = data.portfolio.map(row => `<tr><td>${row.stock_id}</td><td>${row.name}</td><td>${row.quantity}</td></tr>`).join('');
+    const htbody = document.querySelector('#history-table tbody');
+    htbody.innerHTML = data.trade_history.map(row => `<tr><td>${row.date}</td><td>${row.stock_id}</td><td>${row.action}</td><td>${row.price}</td><td>${row.quantity}</td></tr>`).join('');
+    loadOrders();
+}
+
+async function loadOrders() {
+    const stockId = document.getElementById('order-stock-filter').value;
+    let url = '/api/orders';
+    if (stockId && stockId !== 'all') url += `?stock_id=${stockId}`;
+    const res = await fetch(api(url));
+    const data = await res.json();
+    const tbody = document.querySelector('#orders-table tbody');
+    tbody.innerHTML = data.map(row => `<tr><td>${row.date}</td><td>${row.stock_id}</td><td>${row.action}</td><td>${row.price}</td><td>${row.quantity}</td><td>${row.status}</td><td><button onclick="cancelOrder('${row.id}')">取消</button></td></tr>`).join('');
+}
+
+async function cancelOrder(orderId) {
+    await fetch(api(`/api/cancel_order/${orderId}`), {method: 'POST'});
+    loadOrders();
+}
+
+function setupOrderStockFilter() {
+    const select = document.getElementById('order-stock-filter');
+    select.innerHTML = `<option value="all">全部</option>` + stocks.map(s => `<option value="${s.id}">${s.id} ${s.name}</option>`).join('');
+    select.onchange = loadOrders;
+}
+
+fetchStocks();
+loadPortfolio();
+</script>
+</body>
+</html> 
